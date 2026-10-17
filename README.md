@@ -1,108 +1,41 @@
-# @loloof64/react-native-stockfish
+# Stockfish engine library of Inner Board
 
-Use stockfish chess engine in your React Native application.
+This repository is the source code of the chess engine library in the Android
+app **Inner Board: Blindfold Chess** (`com.girskorr.innerboard`), from version
+1.0.0 on. The app plays against [Stockfish](https://stockfishchess.org) 17,
+which is free software under the GNU General Public License version 3, and the
+engine library is distributed under that license (see [`COPYING`](COPYING)).
 
-## Installation
+The library is [react-native-stockfish](https://github.com/loloof64/ReactNativeStockfish)
+0.3.3, which contains Stockfish 17 (`cpp/stockfish`) and the two neural
+networks it embeds (`cpp/nn-1111cefa1111.nnue`, `cpp/nn-37f18f62d772.nnue`),
+with the changes the app makes:
 
-```sh
-npm install @loloof64/react-native-stockfish
-```
+1. The first commit is the package exactly as published on npm
+   (`@loloof64/react-native-stockfish@0.3.3`).
+2. The second commit applies the app's patch, also kept as
+   [`inner-board/react-native-stockfish+0.3.3.patch`](inner-board/react-native-stockfish+0.3.3.patch):
+   the build downloads a network only when it is missing or does not match its
+   SHA-256, the library is linked for 16 KB memory pages, the engine can be
+   stopped and started again, and on Android one engine and one pair of output
+   readers run per process.
 
-## Usage
+The original documentation of the package is in [`README.package.md`](README.package.md).
 
-```js
-import {
-  useStockfish
-} from '@loloof64/react-native-stockfish';
+## Building
 
-// ...
+The app builds this library from source as part of its Android build:
+`android/CMakeLists.txt` compiles Stockfish (`cpp/stockfish/src`), its stream
+adapters (`cpp/stockfish/fixes`) and the bridge (`cpp/react-native-stockfish.cpp`,
+`android/cpp-adapter.cpp`) into `libreact-native-stockfish.so`, with both
+networks embedded. To build it yourself, add this directory as the
+`@loloof64/react-native-stockfish` dependency of a React Native app (New
+Architecture) and build the app for Android with the NDK.
 
-const [stockfishOutput, setStockfishOutput] = useState('');
-  const {stockfishLoop, stopStockfish, sendCommandToStockfish} = useStockfish({
-    onOutput: useCallback((output: string) => {
-      setStockfishOutput((prev) => prev + output);
-    }, []),
-    onError: useCallback((error: string) => {
-      setStockfishOutput((prev) => `${prev}\n###Err\n${error}\n###`);
-    }, [])
-  });
+## Licenses
 
-// ...
-
-stockfishLoop();
-
-// ...
-
-sendCommandToStockfish('go movetime 1000');
-
-// ...
-
-stopStockfish();
-```
-
-## Testing example project
-
-Get started with the project:
-
-$ yarn
-
-Run the example app on iOS:
-
-$ yarn example ios
-
-Run the example app on Android:
-
-$ yarn example android
-
-## Contributing
-
-See the [contributing guide](CONTRIBUTING.md) to learn how to contribute to the repository and the development workflow.
-
-### Changing Stockfish source files
-
-If you need to upgrade Stockfish source files, create a folder **stockfish** inside **cpp** folder, copy the **src** folder from the stockfish sources into the new **stockfish folder**.
-
-In **stockfish/src/main.cpp** replace the name of function `main` with `stockfish_core`.
-
-Also you need to make some more adaptive works :
-
-#### Adapting streams
-
-- copy the **cpp/fixes** folder inside the **cpp/stockfish** folder
-
-- replace all calls to `cout << #SomeContent# << endl` by `fakeout << #SomeContent# << fakeendl` (And ajust also calls to `cout.rdbuf()` by `fakeout.rdbuf()`) **But do not replace calls to sync_cout**.
-- copy folder **cpp/fixes** inside the **stockfish** folder
-- add include to **../fixes/fixes.h** in all related files (and adjust the include path accordingly)
-- proceed accordingly for `cin` : replace by `fakein`
-- and the same for `cerr`: replace by `fakeerr`
-- in **misc.h** replace
-
-```cpp
-#define sync_cout std::cout << IO_LOCK
-#define sync_endl std::endl << IO_UNLOCK
-```
-
-with
-
-```cpp
-#define sync_cout fakeout << IO_LOCK
-#define sync_endl fakeendl << IO_UNLOCK
-```
-
-and include **../../fixes/fixes.h**
-
-#### Adapting NNUE
-
-In file **CMakeLists.txt** replace the names of big and small NNUE by the ones you can find in file **cpp/stockfish/src/evaluate.h**. Also replace those values in the file **ReactNativeStockfish.podspec**, as well as in the file **android/CMakeLists.txt**.
-
-## License
-
-MIT
-
----
-
-Made with [create-react-native-library](https://github.com/callstack/react-native-builder-bob)
-
-## Credits
-
-Using sources of [Stockfish 17](https://stockfishchess.org/).
+- Stockfish (`cpp/stockfish`): GNU GPL v3, see `COPYING`. Copyright (C)
+  2004-2024 The Stockfish developers, see `cpp/stockfish/AUTHORS`.
+- The React Native wrapper: MIT, see `LICENSE`. Copyright (c) 2024-2025
+  Laurent Bernabé. The app's changes to it are offered under the same terms.
+- The engine library as built into the app, which combines both: GNU GPL v3.

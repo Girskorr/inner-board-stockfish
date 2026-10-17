@@ -1,0 +1,291 @@
+diff --git a/node_modules/@loloof64/react-native-stockfish/android/CMakeLists.txt b/node_modules/@loloof64/react-native-stockfish/android/CMakeLists.txt
+index 8b801b4..3baaa74 100644
+--- a/node_modules/@loloof64/react-native-stockfish/android/CMakeLists.txt
++++ b/node_modules/@loloof64/react-native-stockfish/android/CMakeLists.txt
+@@ -5,14 +5,33 @@ set (CMAKE_VERBOSE_MAKEFILE ON)
+ set (CMAKE_CXX_STANDARD 17)
+ 
+ # Include stockfish NNUE
+-set (NNUE_NAME_BIG nn-1111cefa1111.nnue)
+-set (NNUE_NAME_SMALL nn-37f18f62d772.nnue)
+-## Download big NNUE
+-file(DOWNLOAD https://tests.stockfishchess.org/api/nn/${NNUE_NAME_BIG} ../cpp/${NNUE_NAME_BIG} SHOW_PROGRESS)
+-file(COPY ../cpp/${NNUE_NAME_BIG} DESTINATION ${CMAKE_BINARY_DIR})
+-## Download small NNUE
+-file(DOWNLOAD https://tests.stockfishchess.org/api/nn/${NNUE_NAME_SMALL} ../cpp/${NNUE_NAME_SMALL} SHOW_PROGRESS)
+-file(COPY ../cpp/${NNUE_NAME_SMALL} DESTINATION ${CMAKE_BINARY_DIR})
++# Stockfish names each network after the first 12 hex digits of its SHA-256.
++# Download a network only when the cached copy is missing or does not match,
++# verify it, and give up after a stalled transfer instead of hanging the
++# build or embedding a truncated file. Each ABI configures in parallel, so
++# each downloads to its own temporary file before the atomic rename.
++function(fetch_nnue name sha256)
++  set(target "${CMAKE_CURRENT_SOURCE_DIR}/../cpp/${name}")
++  set(actual "")
++  if(EXISTS "${target}")
++    file(SHA256 "${target}" actual)
++  endif()
++  if(NOT actual STREQUAL sha256)
++    set(part "${target}.${ANDROID_ABI}.part")
++    file(DOWNLOAD "https://tests.stockfishchess.org/api/nn/${name}" "${part}"
++         EXPECTED_HASH SHA256=${sha256}
++         INACTIVITY_TIMEOUT 60 TIMEOUT 1800 STATUS status SHOW_PROGRESS)
++    list(GET status 0 code)
++    if(NOT code EQUAL 0)
++      file(REMOVE "${part}")
++      message(FATAL_ERROR "Downloading Stockfish network ${name} failed: ${status}")
++    endif()
++    file(RENAME "${part}" "${target}")
++  endif()
++  file(COPY "${target}" DESTINATION ${CMAKE_BINARY_DIR})
++endfunction()
++fetch_nnue(nn-1111cefa1111.nnue 1111cefa11116b77161bd4b14dab4c50f26e5920c756f4861592be3dcd6de174)
++fetch_nnue(nn-37f18f62d772.nnue 37f18f62d772f3107e1d6aaca3898c130c3c86f2ab63e6555fbbca20635a899d)
+ 
+ # Include stockfish sources and fixes
+ file(GLOB_RECURSE stockfishCppPaths "../cpp/stockfish/src/*.cpp")
+@@ -26,6 +45,13 @@ add_library(react-native-stockfish            SHARED
+             ${stockfishFixesPaths}
+ )
+ 
++# --- 16 KB page size support (Android 15+) ------------------------------------
++# Without this, the .so LOAD segments align to 4 KB and fail the ELF alignment
++# check ("not 16 KB compatible") on 16 KB-page devices/emulators. Every other
++# native lib in the app (RN 0.81 / Expo 54 / NDK 27) is already 16 KB-aligned;
++# Stockfish was the lone 4 KB outlier. Force the linker max page size to 16 KB.
++target_link_options(react-native-stockfish PRIVATE "-Wl,-z,max-page-size=16384")
++
+ # Specifies a path to native header files.
+ include_directories(
+             ../cpp
+diff --git a/node_modules/@loloof64/react-native-stockfish/android/cpp-adapter.cpp b/node_modules/@loloof64/react-native-stockfish/android/cpp-adapter.cpp
+index f2eab91..57459cf 100644
+--- a/node_modules/@loloof64/react-native-stockfish/android/cpp-adapter.cpp
++++ b/node_modules/@loloof64/react-native-stockfish/android/cpp-adapter.cpp
+@@ -12,6 +12,12 @@ Java_com_loloof64_reactnativestockfish_ReactNativeStockfishModule_main(JNIEnv *e
+     return reactnativestockfish::stockfish_main();
+ }
+ 
++extern "C" JNIEXPORT void JNICALL
++Java_com_loloof64_reactnativestockfish_ReactNativeStockfishModule_openStreams(JNIEnv *env, jclass type)
++{
++    reactnativestockfish::stockfish_streams_open();
++}
++
+ extern "C" JNIEXPORT jboolean JNICALL
+ Java_com_loloof64_reactnativestockfish_ReactNativeStockfishModule_stdinWrite(JNIEnv *env, jclass type, jstring command)
+ {
+diff --git a/node_modules/@loloof64/react-native-stockfish/android/src/main/java/com/loloof64/reactnativestockfish/ReactNativeStockfishModule.kt b/node_modules/@loloof64/react-native-stockfish/android/src/main/java/com/loloof64/reactnativestockfish/ReactNativeStockfishModule.kt
+index 3388c19..5dbb5e5 100644
+--- a/node_modules/@loloof64/react-native-stockfish/android/src/main/java/com/loloof64/reactnativestockfish/ReactNativeStockfishModule.kt
++++ b/node_modules/@loloof64/react-native-stockfish/android/src/main/java/com/loloof64/reactnativestockfish/ReactNativeStockfishModule.kt
+@@ -10,11 +10,8 @@ import kotlinx.coroutines.*
+ class ReactNativeStockfishModule(reactContext: ReactApplicationContext) :
+   NativeReactNativeStockfishSpec(reactContext) {
+ 
+-  private val mainCoroutineScope = CoroutineScope(Dispatchers.Default)
+-  private val outputReaderCoroutineScope = CoroutineScope(Dispatchers.Default)
+-  private val errorReaderCoroutineScope = CoroutineScope(Dispatchers.Default)
+-
+   external fun main()
++  external fun openStreams()
+   external fun stdoutRead(): String?
+   external fun stderrRead(): String?
+   external fun stdinWrite(command: String)
+@@ -28,46 +25,29 @@ class ReactNativeStockfishModule(reactContext: ReactApplicationContext) :
+     System.loadLibrary("react-native-stockfish")
+   }
+ 
++  // The engine and its stream readers exist once per process. A reloaded JS
++  // context gets a new module instance: it takes over the running engine and
++  // the readers instead of starting a second engine loop and second readers
++  // on the same streams, which would split the engine's input and output
++  // between the two (and deliver half of it to the dead context).
+   override fun stockfishLoop() {
+-    val delayTimeMs = 100L
+-    mainCoroutineScope.launch { 
+-      delay(delayTimeMs)
+-      main()
+-    }
+-    outputReaderCoroutineScope.launch {
+-      while (true) {
+-        val reactIsNotReady = reactApplicationContext.currentActivity == null
+-        if (reactIsNotReady) {
+-          delay(delayTimeMs)
+-          continue
+-        }
+-        val output = stdoutRead()
+-        if (output == null) {
+-          delay(delayTimeMs)
+-          continue
+-        }
+-        reactApplicationContext
+-          .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+-          .emit("stockfish-output", output)
+-        delay(delayTimeMs)
++    synchronized(lock) {
++      current = this
++      if (!readersStarted) {
++        readersStarted = true
++        startReader("stockfish-output") { it.stdoutRead() }
++        startReader("stockfish-error") { it.stderrRead() }
+       }
++      if (engineRunning) return
++      engineRunning = true
++      openStreams()
+     }
+-    errorReaderCoroutineScope.launch {
+-      while (true) {
+-        val reactIsNotReady = reactApplicationContext.currentActivity == null
+-        if (reactIsNotReady) {
+-          delay(delayTimeMs)
+-          continue
+-        }
+-        val output = stderrRead()
+-        if (output == null) {
+-          delay(delayTimeMs)
+-          continue
+-        }
+-        reactApplicationContext
+-          .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+-          .emit("stockfish-error", output)
+-        delay(delayTimeMs)
++    engineScope.launch {
++      delay(DELAY_MS)
++      try {
++        main()
++      } finally {
++        synchronized(lock) { engineRunning = false }
+       }
+     }
+   }
+@@ -76,13 +56,47 @@ class ReactNativeStockfishModule(reactContext: ReactApplicationContext) :
+     stdinWrite(command)
+   }
+ 
++  // Ends the engine loop; the readers stay for the next one.
+   override fun stopStockfish() {
+-    outputReaderCoroutineScope.cancel()
+-    errorReaderCoroutineScope.cancel()
+     sendCommandToStockfish("quit\n")
+   }
+ 
+   companion object {
+     const val NAME = "ReactNativeStockfish"
++    private const val DELAY_MS = 100L
++
++    private val lock = Any()
++    private val engineScope = CoroutineScope(Dispatchers.Default)
++    private val readerScope = CoroutineScope(Dispatchers.IO)
++    @Volatile private var current: ReactNativeStockfishModule? = null
++    private var engineRunning = false
++    private var readersStarted = false
++
++    private fun startReader(
++      event: String,
++      read: (ReactNativeStockfishModule) -> String?,
++    ) {
++      readerScope.launch {
++        while (true) {
++          val module = current
++          if (module == null || module.reactApplicationContext.currentActivity == null) {
++            delay(DELAY_MS)
++            continue
++          }
++          // The JNI read blocks until a fragment arrives. Drain ready output
++          // immediately; delaying every fragment can exceed the UCI deadline.
++          val output = read(module)
++          if (output == null) {
++            delay(DELAY_MS)
++            continue
++          }
++          // A reload may have happened while the read was blocked: the line
++          // goes to the JS context that is current now.
++          (current ?: module).reactApplicationContext
++            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
++            .emit(event, output)
++        }
++      }
++    }
+   }
+ }
+diff --git a/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.cpp b/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.cpp
+index 91cc40b..2bc3837 100644
+--- a/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.cpp
++++ b/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.cpp
+@@ -17,6 +17,13 @@ namespace reactnativestockfish
+ {
+ 	const char *QUITOK = "quit\n";
+ 
++	void stockfish_streams_open()
++	{
++		fakeout.open();
++		fakein.open();
++		fakeerr.open();
++	}
++
+ 	int stockfish_main()
+ 	{
+ 		int argc = 1;
+@@ -33,6 +40,7 @@ namespace reactnativestockfish
+ 
+ 		fakeout.close();
+ 		fakein.close();
++		fakeerr.close();
+ 
+ 		return exitCode;
+ 	}
+diff --git a/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.h b/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.h
+index cf555ba..78a5016 100644
+--- a/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.h
++++ b/node_modules/@loloof64/react-native-stockfish/cpp/react-native-stockfish.h
+@@ -18,6 +18,9 @@ namespace reactnativestockfish
+   // Runs the main stockfish loop
+   int stockfish_main();
+ 
++  // Reopens the in-memory streams before restarting a stopped engine.
++  void stockfish_streams_open();
++
+   // Send command to stockfish
+   ssize_t stockfish_stdin_write(const char *data);
+ 
+diff --git a/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.cpp b/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.cpp
+index 4900b0e..a93889d 100644
+--- a/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.cpp
++++ b/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.cpp
+@@ -15,6 +15,11 @@ void FakeStream::close() {
+     closed = true;
+     mutex_signal.notify_one();
+ }
++void FakeStream::open() {
++    std::lock_guard<std::mutex> lock(mutex_guard);
++    closed = false;
++    while (!string_queue.empty()) string_queue.pop();
++}
+ bool FakeStream::is_closed() { return closed; }
+ 
+ std::streambuf* FakeStream::rdbuf() { return nullptr; }
+diff --git a/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.h b/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.h
+index dadab6d..bd381fc 100644
+--- a/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.h
++++ b/node_modules/@loloof64/react-native-stockfish/cpp/stockfish/fixes/stream_fix.h
+@@ -40,6 +40,7 @@ class FakeStream {
+     bool try_get_line(std::string& val);
+ 
+     void close();
++    void open();
+     bool is_closed();
+ 
+     std::streambuf* rdbuf();
+diff --git a/node_modules/@loloof64/react-native-stockfish/ios/ReactNativeStockfish.mm b/node_modules/@loloof64/react-native-stockfish/ios/ReactNativeStockfish.mm
+index e9d25fa..367e0fa 100644
+--- a/node_modules/@loloof64/react-native-stockfish/ios/ReactNativeStockfish.mm
++++ b/node_modules/@loloof64/react-native-stockfish/ios/ReactNativeStockfish.mm
+@@ -32,6 +32,7 @@ RCT_EXPORT_METHOD(stockfishLoop) {
+     }
+ 
+     shouldStopStockfish = NO;
++    reactnativestockfish::stockfish_streams_open();
+     stockfishThread = [[NSThread alloc] initWithTarget:self selector:@selector(runStockfish) object:nil];
+     [stockfishThread start];
+     [self startTimerForStdoutReading];
