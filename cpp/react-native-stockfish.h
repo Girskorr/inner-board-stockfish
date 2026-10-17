@@ -18,6 +18,9 @@ namespace reactnativestockfish
   // Runs the main stockfish loop
   int stockfish_main();
 
+  // Reopens the in-memory streams before restarting a stopped engine.
+  void stockfish_streams_open();
+
   // Send command to stockfish
   ssize_t stockfish_stdin_write(const char *data);
 

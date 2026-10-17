@@ -12,6 +12,12 @@ Java_com_loloof64_reactnativestockfish_ReactNativeStockfishModule_main(JNIEnv *e
     return reactnativestockfish::stockfish_main();
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_loloof64_reactnativestockfish_ReactNativeStockfishModule_openStreams(JNIEnv *env, jclass type)
+{
+    reactnativestockfish::stockfish_streams_open();
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_loloof64_reactnativestockfish_ReactNativeStockfishModule_stdinWrite(JNIEnv *env, jclass type, jstring command)
 {

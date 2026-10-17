@@ -17,6 +17,13 @@ namespace reactnativestockfish
 {
 	const char *QUITOK = "quit\n";
 
+	void stockfish_streams_open()
+	{
+		fakeout.open();
+		fakein.open();
+		fakeerr.open();
+	}
+
 	int stockfish_main()
 	{
 		int argc = 1;
@@ -33,6 +40,7 @@ namespace reactnativestockfish
 
 		fakeout.close();
 		fakein.close();
+		fakeerr.close();
 
 		return exitCode;
 	}

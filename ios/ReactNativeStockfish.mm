@@ -32,6 +32,7 @@ RCT_EXPORT_METHOD(stockfishLoop) {
     }
 
     shouldStopStockfish = NO;
+    reactnativestockfish::stockfish_streams_open();
     stockfishThread = [[NSThread alloc] initWithTarget:self selector:@selector(runStockfish) object:nil];
     [stockfishThread start];
     [self startTimerForStdoutReading];

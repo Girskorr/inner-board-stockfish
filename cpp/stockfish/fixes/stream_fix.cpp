@@ -15,6 +15,11 @@ void FakeStream::close() {
     closed = true;
     mutex_signal.notify_one();
 }
+void FakeStream::open() {
+    std::lock_guard<std::mutex> lock(mutex_guard);
+    closed = false;
+    while (!string_queue.empty()) string_queue.pop();
+}
 bool FakeStream::is_closed() { return closed; }
 
 std::streambuf* FakeStream::rdbuf() { return nullptr; }
